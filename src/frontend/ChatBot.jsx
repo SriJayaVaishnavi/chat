@@ -31,16 +31,10 @@ const ChatBot = () => {
         console.error('Failed to get project context:', error);
       }
     };
-    
     getProjectContext();
   }, []);
 
   const handleCreateTicket = async (messageText) => {
-    if (!projectKey) {
-      alert('Project context not available. Please refresh the page.');
-      return;
-    }
-
     setCreatingTicket(true);
     
     try {
@@ -59,6 +53,7 @@ const ChatBot = () => {
           isTicketCreated: true,
           ticketKey: result.ticketKey,
           ticketUrl: result.ticketUrl,
+          originalIssueData: messageText,  // Store the original AI response
           showActions: true
         };
         setMessages(prev => [...prev, successMessage]);
@@ -87,11 +82,26 @@ const ChatBot = () => {
   const handlePublishToKnowledgeBase = async (ticketKey, ticketUrl, issueData) => {
     setPublishingToKB(true);
     
+    // Find the original AI response message that contains the Issue Summary
+    let originalAIResponse = issueData;
+    const aiMessage = messages.find(msg => 
+      msg.text.includes('Issue Summary:') && 
+      msg.text.includes('Next Steps:') && 
+      msg.sender === 'bot'
+    );
+    
+    if (aiMessage) {
+      originalAIResponse = aiMessage.text;
+      console.log('Found original AI response:', originalAIResponse);
+    } else {
+      console.log('Could not find original AI response, using:', issueData);
+    }
+    
     try {
       const result = await invoke('publishToKnowledgeBase', {
         ticketKey: ticketKey,
         ticketUrl: ticketUrl,
-        issueData: issueData,
+        issueData: originalAIResponse,
         projectKey: projectKey,
         siteUrl: siteUrl
       });
@@ -353,7 +363,7 @@ const ChatBot = () => {
                         </Inline>
                         <Inline space="space.100" alignInline="start">
                           <Button
-                            onClick={() => handlePublishToKnowledgeBase(message.ticketKey, message.ticketUrl, message.text)}
+                            onClick={() => handlePublishToKnowledgeBase(message.ticketKey, message.ticketUrl, message.originalIssueData || message.text)}
                             isDisabled={publishingToKB}
                             appearance="subtle"
                             size="compact"

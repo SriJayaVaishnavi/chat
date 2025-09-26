@@ -5,26 +5,26 @@ import ChatBot from './ChatBot';
 // Mock the Forge components since they're not available in tests
 jest.mock('@forge/react', () => ({
   Text: ({ children }) => <span>{children}</span>,
-  TextArea: (props) => (
+  TextArea: ({ value, onChange, placeholder }) => (
     <textarea 
-      {...props}
+      value={value} 
+      onChange={onChange} 
+      placeholder={placeholder} 
       data-testid="chat-input"
     />
   ),
-  Button: (props) => (
+  Button: ({ children, onClick, isDisabled }) => (
     <button 
-      {...props}
+      onClick={onClick}
+      disabled={isDisabled}
       data-testid="send-button"
-    />
+    >
+      {children}
+    </button>
   ),
   Box: ({ children }) => <div>{children}</div>,
   Stack: ({ children }) => <div>{children}</div>,
   Inline: ({ children }) => <div>{children}</div>
-}));
-
-// Mock the Forge bridge
-jest.mock('@forge/bridge', () => ({
-  invoke: jest.fn().mockResolvedValue('This is a test response from the AI.')
 }));
 
 describe('ChatBot', () => {
@@ -34,7 +34,8 @@ describe('ChatBot', () => {
 
   it('displays the initial bot message', () => {
     render(<ChatBot />);
-    expect(screen.getByText('Hello! I am your AI Assistant. Please describe the issue you\'re experiencing and I\'ll help summarize it for you.')).toBeInTheDocument();
+    expect(screen.getByText('🤖 AI Assistant')).toBeInTheDocument();
+    expect(screen.getByText('Hello! I am your AI Assistant. How can I help you today?')).toBeInTheDocument();
   });
 
   it('has an input field and send button', () => {

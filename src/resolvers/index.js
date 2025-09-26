@@ -1,12 +1,17 @@
 import Resolver from '@forge/resolver';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import api, { route } from '@forge/api';
-
-const resolver = new Resolver();
+import api, { route } from "@forge/api";
+import { storage } from "@forge/api";
+import { createConfluencePageV2 } from "./confluence-v2.js";
 
 // Store API client globally
 let genAI = null;
 let apiKeyValid = false;
+
+// Store Confluence page ID globally
+let confluencePageId = null;
+
+const resolver = new Resolver();
 
 // Initialize the Gemini API client
 const initializeGemini = () => {
@@ -116,7 +121,7 @@ const generateMockResponse = (input) => {
   }
   
   if (lowerInput.includes('jira') || lowerInput.includes('issue') || lowerInput.includes('project')) {
-    return "Issue Summary: Inquiry about Jira-related matters.\nNext Steps: This issue will be navigated to the Jira Administration team for assistance.";
+    return "I can help you with Jira-related queries. You can ask me about issues, projects, or workflows!";
   }
   
   if (lowerInput.includes('help')) {
@@ -233,60 +238,82 @@ resolver.define('createTicket', async (req) => {
   }
 });
 
-// Test function to check Confluence availability with multiple API approaches
+// Test function to check Confluence availability
 resolver.define('testConfluence', async (req) => {
   try {
-    console.log('Testing Confluence availability with multiple approaches...');
+    console.log('Testing Confluence availability...');
     
-    const results = [];
-    
-    // Try different Confluence API endpoints that work with Forge
-    const endpoints = [
-      '/wiki/rest/api/space',
-      '/wiki/api/v2/spaces',
-      '/rest/api/space',
-      '/api/v2/spaces'
-    ];
-    
-    for (const endpoint of endpoints) {
-      try {
-        console.log(`Trying endpoint: ${endpoint}`);
-        const response = await api.asApp().requestConfluence(route`${endpoint}`, {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json'
-          }
-        });
-        
-        results.push({
-          endpoint,
-          status: response.status,
-          success: response.ok
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          return {
-            success: true,
-            message: `Confluence accessible via ${endpoint}`,
-            spaces: data.results?.length || data.values?.length || 0,
-            workingEndpoint: endpoint,
-            allResults: results
-          };
+    // Test Confluence API v2 spaces endpoint first
+    try {
+      console.log('Testing Confluence API v2 spaces...');
+      const response = await api.asApp().requestConfluence(route`/wiki/api/v2/spaces`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
         }
-      } catch (endpointError) {
-        results.push({
-          endpoint,
-          error: endpointError.message,
-          success: false
-        });
+      });
+      
+      console.log('Spaces API v2 response status:', response.status);
+      
+      if (response.ok) {
+        const data = await response.json();
+        const spaces = data.results || data.values || [];
+        
+        return {
+          success: true,
+          message: 'Confluence is accessible via API v2',
+          endpoint: '/wiki/api/v2/spaces',
+          spaces: spaces.length,
+          spaceList: spaces.map(space => ({ 
+            key: space.key || space.id, 
+            name: space.name || space.title 
+          })).slice(0, 5)
+        };
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.log('API v2 failed:', response.status, errorData.message);
       }
+    } catch (v2Error) {
+      console.log('API v2 error:', v2Error.message);
+    }
+    
+    // Fallback to content API
+    try {
+      console.log('Testing Confluence content API...');
+      const response = await api.asApp().requestConfluence(route`/wiki/rest/api/content`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
+      
+      console.log('Content API response status:', response.status);
+      
+      if (response.ok) {
+        const data = await response.json();
+        const content = data.results || [];
+        
+        return {
+          success: true,
+          message: 'Confluence is accessible via Content API',
+          endpoint: '/wiki/rest/api/content',
+          spaces: content.length,
+          spaceList: content.map(item => ({ 
+            key: item.space?.key || 'unknown', 
+            name: item.space?.name || item.title || 'Unknown'
+          })).slice(0, 5)
+        };
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        console.log('Content API failed:', response.status, errorData.message);
+      }
+    } catch (contentError) {
+      console.log('Content API error:', contentError.message);
     }
     
     return {
       success: false,
-      message: 'No working Confluence endpoints found',
-      allResults: results
+      message: 'All Confluence API endpoints failed. Confluence may not be properly configured or accessible.'
     };
     
   } catch (error) {
@@ -299,248 +326,28 @@ resolver.define('testConfluence', async (req) => {
   }
 });
 
-// Function to publish to Confluence knowledge base (with fallback to Jira)
+// Function to publish to Confluence knowledge base - NO FALLBACK, SHOW EXACT ERROR
 resolver.define('publishToKnowledgeBase', async (req) => {
   const { ticketKey, ticketUrl, issueData, projectKey, siteUrl } = req.payload;
   
-  try {
-    console.log('Publishing to knowledge base for:', { ticketKey, projectKey });
-    
-    // First, try to create a proper Confluence page
-    try {
-      return await createConfluencePage(ticketKey, ticketUrl, issueData, siteUrl);
-    } catch (confluenceError) {
-      console.log('Confluence failed, falling back to Jira KB:', confluenceError.message);
-      return await createJiraKnowledgeBase(ticketKey, ticketUrl, issueData, projectKey, siteUrl);
-    }
-    
-  } catch (error) {
-    console.error('Error publishing to knowledge base:', error);
-    return {
-      success: false,
-      error: error.message,
-      message: `Failed to publish to Knowledge Base: ${error.message}`
-    };
-  }
+  console.log('Publishing to knowledge base for:', { ticketKey, projectKey });
+  
+  // Create Confluence page using v2 API - NO TRY-CATCH, LET ERROR BUBBLE UP
+  console.log('=== ATTEMPTING CONFLUENCE PAGE CREATION ===');
+  console.log('Input parameters:', { ticketKey, ticketUrl, projectKey, siteUrl });
+  
+  const confluenceResult = await createConfluencePageV2(ticketKey, ticketUrl, issueData, siteUrl);
+  console.log('=== CONFLUENCE PAGE CREATION SUCCESSFUL ===');
+  console.log('Result:', confluenceResult);
+  return confluenceResult;
 });
 
-// Function to create Confluence page
+// This function is replaced by createConfluencePageV2 - keeping for compatibility
 async function createConfluencePage(ticketKey, ticketUrl, issueData, siteUrl) {
-  console.log('Attempting to create Confluence page...');
-  
-  // Parse the issue data
-  const lines = issueData.split('\n');
-  let title = `KB: ${ticketKey}`;
-  let content = issueData;
-  
-  const summaryLine = lines.find(line => line.startsWith('Issue Summary:'));
-  if (summaryLine) {
-    title = summaryLine.replace('Issue Summary:', '').trim();
-  }
-  
-  // Try to find the correct space - first check if Tickettele exists
-  let spaceKey = 'Tickettele';
-  
-  // Try different endpoints to find spaces
-  const endpoints = ['/wiki/rest/api/space', '/wiki/api/v2/spaces'];
-  let spacesData = null;
-  
-  for (const endpoint of endpoints) {
-    try {
-      const spacesResponse = await api.asApp().requestConfluence(route`${endpoint}`, {
-        method: 'GET',
-        headers: { 'Accept': 'application/json' }
-      });
-      
-      if (spacesResponse.ok) {
-        spacesData = await spacesResponse.json();
-        console.log(`Successfully got spaces from ${endpoint}`);
-        break;
-      }
-    } catch (e) {
-      console.log(`Failed to get spaces from ${endpoint}:`, e.message);
-    }
-  }
-  
-  if (!spacesData) {
-    throw new Error('Cannot access Confluence spaces - API not available');
-  }
-  
-  const spaces = spacesData.results || spacesData.values || [];
-  console.log('Available spaces:', spaces.map(s => s.key));
-  
-  // Find or use first available space
-  const targetSpace = spaces.find(s => 
-    s.key === 'Tickettele' || s.key === 'TICKETTELE' || 
-    s.name?.toLowerCase().includes('tickettele')
-  );
-  
-  if (targetSpace) {
-    spaceKey = targetSpace.key;
-  } else if (spaces.length > 0) {
-    spaceKey = spaces[0].key;
-    console.log(`Using first available space: ${spaceKey}`);
-  } else {
-    throw new Error('No Confluence spaces available');
-  }
-  
-  // Create the page
-  const pagePayload = {
-    type: "page",
-    title: title,
-    space: { key: spaceKey },
-    body: {
-      storage: {
-        value: `<h1>${title}</h1>
-<p><strong>Related Jira Ticket:</strong> <a href="${ticketUrl}">${ticketKey}</a></p>
-<hr/>
-<h2>Issue Details</h2>
-<p>${content.replace(/\n/g, '<br/>')}</p>
-<p><em>Created from ticket ${ticketKey} on ${new Date().toLocaleDateString()}</em></p>`,
-        representation: "storage"
-      }
-    }
-  };
-  
-  // Try different page creation endpoints
-  const createEndpoints = ['/wiki/rest/api/content', '/wiki/api/v2/pages'];
-  
-  for (const endpoint of createEndpoints) {
-    try {
-      const response = await api.asApp().requestConfluence(route`${endpoint}`, {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(pagePayload)
-      });
-      
-      if (response.ok) {
-        const pageData = await response.json();
-        console.log('Successfully created Confluence page:', pageData.id);
-        
-        const pageUrl = `${siteUrl || 'https://srijayavaishnavi7.atlassian.net'}/wiki/spaces/${spaceKey}/pages/${pageData.id}`;
-        
-        return {
-          success: true,
-          message: 'Successfully published to Confluence Knowledge Base',
-          articleUrl: pageUrl,
-          pageId: pageData.id,
-          pageTitle: title
-        };
-      }
-    } catch (e) {
-      console.log(`Failed to create page via ${endpoint}:`, e.message);
-    }
-  }
-  
-  throw new Error('All Confluence page creation methods failed');
+  // Redirect to the new v2 implementation
+  return await createConfluencePageV2(ticketKey, ticketUrl, issueData, siteUrl);
 }
 
-// Function to create Jira-based knowledge base (fallback)
-async function createJiraKnowledgeBase(ticketKey, ticketUrl, issueData, projectKey, siteUrl) {
-  console.log('Creating Jira-based knowledge base entry...');
-    
-  // Parse the issue data
-  const lines = issueData.split('\n');
-  let title = `KB: ${ticketKey}`;
-  let content = issueData;
-  
-  const summaryLine = lines.find(line => line.startsWith('Issue Summary:'));
-  if (summaryLine) {
-    title = summaryLine.replace('Issue Summary:', '').trim();
-  }
-  
-  // Add a comprehensive KB comment to the original ticket
-  const kbCommentPayload = {
-    body: {
-      type: "doc",
-      version: 1,
-      content: [
-        {
-          type: "panel",
-          attrs: { panelType: "info" },
-          content: [
-            {
-              type: "paragraph",
-              content: [
-                {
-                  type: "text",
-                  text: "📚 KNOWLEDGE BASE ENTRY",
-                  marks: [{ type: "strong" }]
-                }
-              ]
-            },
-            {
-              type: "heading",
-              attrs: { level: 3 },
-              content: [
-                {
-                  type: "text",
-                  text: title
-                }
-              ]
-            },
-            {
-              type: "paragraph",
-              content: [
-                {
-                  type: "text",
-                  text: content
-                }
-              ]
-            },
-            {
-              type: "paragraph",
-              content: [
-                {
-                  type: "text",
-                  text: `📅 Created: ${new Date().toLocaleDateString()}`,
-                  marks: [{ type: "em" }]
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    }
-  };
-
-  const response = await api.asApp().requestJira(route`/rest/api/3/issue/${ticketKey}/comment`, {
-    method: 'POST',
-    headers: {
-      'Accept': 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(kbCommentPayload)
-  });
-
-  if (response.ok) {
-    // Add KB labels
-    await api.asApp().requestJira(route`/rest/api/3/issue/${ticketKey}`, {
-      method: 'PUT',
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        update: {
-          labels: [{ add: "knowledge-base" }, { add: "kb-entry" }]
-        }
-      })
-    });
-
-    return {
-      success: true,
-      message: 'Successfully created Knowledge Base entry (Confluence unavailable)',
-      articleUrl: `${siteUrl || 'https://srijayavaishnavi7.atlassian.net'}/browse/${ticketKey}`,
-      pageId: ticketKey,
-      pageTitle: title
-    };
-  } else {
-    throw new Error('Failed to create Jira KB entry');
-  }
-}
+// Fallback function removed - we want to see the exact Confluence v2 error
 
 export const handler = resolver.getDefinitions();

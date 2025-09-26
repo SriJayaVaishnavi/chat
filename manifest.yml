@@ -41,3 +41,5 @@ permissions:
     - read:confluence-content.summary
     - read:space:confluence
     - write:confluence-space
+    - write:page:confluence
+    - storage:app
